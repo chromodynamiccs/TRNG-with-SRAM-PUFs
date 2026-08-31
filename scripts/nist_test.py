@@ -1,7 +1,8 @@
 import numpy as np
+import os
 from nistrng import *
 
-bits = open("C:\\Users\\Obama\\Downloads\\TRNGSRAM\\random_bits.txt").read()
+bits = open(os.path.join(os.path.dirname(__file__), '..', 'data', 'raw', 'random_bits.txt')).read()
 print(len(bits))
 seq = np.array([int(b) for b in bits], dtype=np.int64)
 
