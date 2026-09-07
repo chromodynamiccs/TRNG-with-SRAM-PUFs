@@ -1,16 +1,18 @@
-# decay_from_gold.py -- flip fraction (Hamming distance) vs gold reference, per cycle
+# decay_hamming_calculator.py
 #
-# usage: python decay_from_gold.py decay_ones_1750.txt 1
-#        python decay_from_gold.py decay_zeros_1750.txt 0
+# Reads one log containing BOTH phases:
+#   "# ref N"   rows -> natural cold-start captures (majority-voted into a reference)
+#   "# cycle N" rows -> write-1s decay test captures
 #
-#   arg 1: the captured Serial Monitor log file
-#   arg 2: 1 if you wrote all-1s (0xFFFF), 0 if you wrote all-0s (0x0000)
+# Computes the Hamming distance between each test cycle and the majority-vote
+# gold reference. Large distance = written 1s still surviving. Distance
+# shrinking toward the floor = array has decayed back to its natural state.
 #
-# The parser skips header/footer ("=== ... ==="), "# cycle N" markers, and blank
-# lines. Only comma-separated hex data rows are counted, so you can save the raw
-# Serial Monitor dump as-is.
+# usage: python decay_hamming_calculator.py 1750ms_ref3000ms_comparison.txt
 
 import sys
+
+WORD_BITS = 16
 
 
 def popcount(x):
@@ -21,40 +23,77 @@ def popcount(x):
     return n
 
 
-def main():
-    path = sys.argv[1]
-    gold_is_ones = (sys.argv[2] == "1") if len(sys.argv) > 2 else True
-
-    cycles = []
+def parse(path):
+    ref_rows = []
+    test_rows = []
+    target = None
     with open(path) as f:
         for line in f:
             line = line.strip()
+            if line.startswith("# ref"):
+                ref_rows.append([])
+                target = ref_rows
+                continue
             if line.startswith("# cycle"):
-                cycles.append([])
+                test_rows.append([])
+                target = test_rows
                 continue
             if not line or line.startswith("#") or line.startswith("="):
                 continue
-            # data row: comma-separated hex words, all on one line
             words = [int(w, 16) for w in line.split(",") if w]
-            if cycles:
-                cycles[-1] = words
+            if target is not None:
+                target[-1] = words
+    return ref_rows, test_rows
 
-    print("cycle  flipped_bits  total_bits  flip_%")
+
+def majority_reference(ref_rows):
+    # Build a per-bit majority-vote reference across all ref captures.
+    n_words = len(ref_rows[0])
+    ref = []
+    half = len(ref_rows) / 2.0
+    for w in range(n_words):
+        word = 0
+        for b in range(WORD_BITS):
+            ones = 0
+            for row in ref_rows:
+                if (row[w] >> b) & 1:
+                    ones += 1
+            if ones > half:            # majority is 1
+                word |= (1 << b)
+        ref.append(word)
+    return ref
+
+
+def main():
+    path = sys.argv[1]
+    ref_rows, test_rows = parse(path)
+
+    if not ref_rows:
+        print("No '# ref' rows found -- cannot build a reference.")
+        return
+    if not test_rows:
+        print("No '# cycle' rows found -- nothing to compare.")
+        return
+
+    ref = majority_reference(ref_rows)
+    total = len(ref) * WORD_BITS
+
+    print(f"reference: majority vote of {len(ref_rows)} cold-start reads, "
+          f"{total} bits\n")
+    print("cycle  hamming_dist  total_bits  dist_%")
     pcts = []
-    for i, words in enumerate(cycles):
-        total = len(words) * 16
-        if gold_is_ones:
-            flipped = sum(16 - popcount(w) for w in words)   # bits that fell 1->0
-        else:
-            flipped = sum(popcount(w) for w in words)         # bits that rose 0->1
-        pct = 100.0 * flipped / total if total else 0.0
+    for i, words in enumerate(test_rows):
+        dist = sum(popcount(a ^ b) for a, b in zip(words, ref))
+        pct = 100.0 * dist / total if total else 0.0
         pcts.append(pct)
-        print(f"{i:<6} {flipped:<13} {total:<11} {pct:.3f}")
+        print(f"{i:<6} {dist:<13} {total:<11} {pct:.3f}")
 
     if pcts:
-        print(f"\nmean flip%: {sum(pcts)/len(pcts):.3f}   "
+        print(f"\nmean dist%: {sum(pcts)/len(pcts):.3f}   "
               f"min: {min(pcts):.3f}   max: {max(pcts):.3f}   "
               f"spread: {max(pcts)-min(pcts):.3f}")
+        print("\nLow dist% = decayed back to natural state.  "
+              "High dist% = written 1s still surviving.")
 
 
 if __name__ == "__main__":
